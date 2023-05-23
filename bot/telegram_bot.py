@@ -7,6 +7,7 @@ import requests
 import telegram
 import datetime
 from telethon import TelegramClient, sync
+from datetime import timedelta
 
 
 from uuid import uuid4
@@ -78,9 +79,9 @@ class ChatGPTTelegramBot:
         chat_id = update.message.chat_id
 
         # Replace the values below with your own API ID and API hash
-        api_id = 28339239
-        api_hash = 'ddfec545dd0b515a92f836672cd75e3d'
-        phone_number = '+15713226795'
+        api_id = 25797963
+        api_hash = '39e446fa7164ac5b0bf14ee7510287db'
+        phone_number = '+972542493033'
         entity = 'session'  # session_name
         client = TelegramClient(entity, api_id, api_hash)
         client.start()
@@ -89,18 +90,40 @@ class ChatGPTTelegramBot:
         if not await client.is_user_authorized():
             await client.send_code_request(phone_number)
             await client.sign_in(phone_number, input('Enter the code you received: '))
-        date = datetime.datetime(2023, 5, 21, 0, 0, 0, 0, datetime.timezone.utc)
-        timestamp = int(date.timestamp())
-        messages = await client.get_messages(chat_id, limit=5, offset_date=timestamp)
+        chat_date = datetime.datetime(2023, 5, 22, 0, 0, 0, 0, datetime.timezone.utc)
+        # timestamp = int(date.timestamp())
+        # chat_date = datetime.datetime(year=2023, month=5, day=22)
+        # Set up the date range
+        start_date = chat_date.replace(hour=0, minute=0, second=0)
+        end_date = chat_date.replace(hour=23, minute=59, second=59)
+
+        # Set up the offset IDs based on the date range
+        start_message = await client.get_messages(chat_id, offset_date=start_date, limit=1)
+        offset_id = start_message[0].id if start_message else 0
+        end_message = await client.get_messages(chat_id, offset_date=end_date + timedelta(days=1), limit=1)
+        max_id = end_message[0].id if end_message else 0
+
+        messages = await client.get_messages(chat_id, min_id=offset_id, max_id=max_id)
 
         # print(messages)
         output=""
         # messages="sdf"
         for message in messages:
             print("message",message)
-            print("message structure",dir(message))
-            output+=(message.message + '\n')
+            # print("message structure",dir(message))
+            output+=(f'{message.id}: {message.text} - sent by {message.sender.username} at {message.date}\n')
+            # output+=(message.message + '\n')
         await update.message.reply_text(output)
+        
+    async def chat_with_GPT(self, update:Update, contrext:CallbackContext):
+        chat_id = update.message.chat_id
+
+        response, total_token = await self.openai.get_chat_response(chat_id=chat_id,query="what's the time")
+        output_text = f'response: {response}\ntotal_token: {total_token}'        
+        # Send the response back to the user who sent the message
+        await update.message.reply_text(output_text)
+
+    
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -797,6 +820,7 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('reset', self.reset))
         application.add_handler(CommandHandler('history', self.get_group_chat_history))
         application.add_handler(CommandHandler('groupInfo', self.get_group_information))
+        application.add_handler(CommandHandler('chatgpt', self.chat_with_GPT))
         application.add_handler(CommandHandler('help', self.help))
         application.add_handler(CommandHandler('image', self.image))
         application.add_handler(CommandHandler('start', self.help))
