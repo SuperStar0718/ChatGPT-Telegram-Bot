@@ -69,8 +69,9 @@ class ChatGPTTelegramBot:
         group_type = data['result']['type']
         # group_members_count = 2
         # group_members_count = data['result']['members_count']
-        print((data['result']))
-
+        # print((data['result']))
+        # print(dir(self.bot))
+        
         await update.message.reply_text(f'group name : {group_name}\n group type: {group_type}')
 
     async def get_group_chat_history(self, update: Update, context: CallbackContext):
@@ -90,9 +91,8 @@ class ChatGPTTelegramBot:
         if not await client.is_user_authorized():
             await client.send_code_request(phone_number)
             await client.sign_in(phone_number, input('Enter the code you received: '))
-        chat_date = datetime.datetime(2023, 5, 22, 0, 0, 0, 0, datetime.timezone.utc)
-        # timestamp = int(date.timestamp())
-        # chat_date = datetime.datetime(year=2023, month=5, day=22)
+        # chat_date = datetime.datetime.now()
+        chat_date = datetime.datetime(year=2023, month=5, day=22)
         # Set up the date range
         start_date = chat_date.replace(hour=0, minute=0, second=0)
         end_date = chat_date.replace(hour=23, minute=59, second=59)
@@ -105,23 +105,51 @@ class ChatGPTTelegramBot:
 
         messages = await client.get_messages(chat_id, min_id=offset_id, max_id=max_id)
 
-        # print(messages)
         output=""
-        # messages="sdf"
-        for message in messages:
-            print("message",message)
-            # print("message structure",dir(message))
-            output+=(f'{message.id}: {message.text} - sent by {message.sender.username} at {message.date}\n')
-            # output+=(message.message + '\n')
-        await update.message.reply_text(output)
-        
-    async def chat_with_GPT(self, update:Update, contrext:CallbackContext):
-        chat_id = update.message.chat_id
+        for message in reversed(messages):
+            # print("message",message)
+            output+=(f'"{message.text}" is sent by {message.sender.username}\n')
 
-        response, total_token = await self.openai.get_chat_response(chat_id=chat_id,query="what's the time")
-        output_text = f'response: {response}\ntotal_token: {total_token}'        
+        # await update.message.reply_text(output)
+        return output
+        
+    async def chat_with_GPT(self, update:Update, context:CallbackContext):
+        chat_history = await self.get_group_chat_history(update, context)
+        token = self.config['token']
+        # get the chat ID   
+        chat_id = update.message.chat_id
+        url = f'https://api.telegram.org/bot{token}/getChat?chat_id={chat_id}'
+        response = requests.get(url)
+        data = response.json()
+        member_count =await self.bot.get_chat_member_count(chat_id)
+
+        # print("chat history: ", chat_history)
+        content = f"""{{
+            content:{chat_history},
+            members:{member_count}
+        }}"""
+        chat_id = update.message.chat_id
+        query=f"""
+            This is the chat history I give you.
+            {content}
+
+            Analyze this history and answer in json structure to the following questions.
+            * What subject most talked about?
+            * is the group text bullish or bearish?
+            * what is the engagement in percentage? means, how many people written on group comparing to the total members on the group?
+            * what people liked the most?
+            * what people disliked the most?
+            * provide a suggestions for action according to the provided content
+        """
+        print("query: ", query)
+        response, total_token = await self.openai.get_chat_response(chat_id=chat_id,query=query)
+        output_text = f'response: {response}\ntotal_token: {total_token}'  
+        user_object = await self.bot.get_chat_administrators(chat_id)
+        user_id = user_object[0].user.id
         # Send the response back to the user who sent the message
-        await update.message.reply_text(output_text)
+        await self.bot.send_message(chat_id=user_id, text=response)
+        print("sent already")
+        # await update.message.reply_text(output_text)
 
     
 
