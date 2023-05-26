@@ -8,7 +8,8 @@ import telegram
 import datetime
 from telethon import TelegramClient, sync
 from datetime import timedelta
-
+import schedule
+import time
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -72,7 +73,8 @@ class ChatGPTTelegramBot:
         # print((data['result']))
         # print(dir(self.bot))
         
-        await update.message.reply_text(f'group name : {group_name}\n group type: {group_type}')
+        # await update.message.reply_text(f'group name : {group_name}\n group type: {group_type}')
+        await update.message.reply_text(f'group <bold>name</bold> : ')
 
     async def get_group_chat_history(self, update: Update, context: CallbackContext):
         token = self.config['token']
@@ -104,7 +106,7 @@ class ChatGPTTelegramBot:
         max_id = end_message[0].id if end_message else 0
 
         messages = await client.get_messages(chat_id, min_id=offset_id, max_id=max_id)
-
+        await client.disconnect()
         output=""
         for message in reversed(messages):
             # print("message",message)
@@ -133,7 +135,7 @@ class ChatGPTTelegramBot:
             This is the chat history I give you.
             {content}
 
-            Analyze this history and answer in json structure to the following questions.
+            Analyze this history and answer to the following questions and make the questioin bold using only b tag in html.
             * What subject most talked about?
             * is the group text bullish or bearish?
             * what is the engagement in percentage? means, how many people written on group comparing to the total members on the group?
@@ -146,8 +148,9 @@ class ChatGPTTelegramBot:
         output_text = f'response: {response}\ntotal_token: {total_token}'  
         user_object = await self.bot.get_chat_administrators(chat_id)
         user_id = user_object[0].user.id
+        print("final response: ", response)
         # Send the response back to the user who sent the message
-        await self.bot.send_message(chat_id=user_id, text=response)
+        await self.bot.send_message(chat_id=user_id, text=response, parse_mode=telegram.constants.ParseMode.HTML)
         print("sent already")
         # await update.message.reply_text(output_text)
 
@@ -169,6 +172,8 @@ class ChatGPTTelegramBot:
                 '\n\n' +
                 localized_text('help_text', bot_language)[2]
         )
+        schedule.every().day.at("9:00").do(self.chat_with_GPT, context=update.message.chat_id)
+
         await update.message.reply_text(help_text, disable_web_page_preview=True)
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -842,9 +847,7 @@ class ChatGPTTelegramBot:
             .post_init(self.post_init) \
             .concurrent_updates(True) \
             .build()
-
-
-
+        
         application.add_handler(CommandHandler('reset', self.reset))
         application.add_handler(CommandHandler('history', self.get_group_chat_history))
         application.add_handler(CommandHandler('groupInfo', self.get_group_information))
@@ -869,4 +872,9 @@ class ChatGPTTelegramBot:
 
         application.add_error_handler(error_handler)
 
+
         application.run_polling()
+        # Use an infinite loop to run the schedule check continuously
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
