@@ -8,17 +8,19 @@ import telegram
 import datetime
 from telethon import TelegramClient, sync
 from datetime import timedelta
-import schedule
-import time
+import json
+from telethon.tl.functions.channels import GetParticipantsRequest
+from telethon.tl.types import ChannelParticipantsSearch
+
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle
 from telegram import InputTextMessageContent, BotCommand
 from telegram.error import RetryAfter, TimedOut
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
-    filters, InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext, Updater
-
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, MessageHandler, \
+     InlineQueryHandler, CallbackQueryHandler, Application, ContextTypes, CallbackContext, Updater
+from telegram.ext import filters
 from pydub import AudioSegment
 
 from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
@@ -33,12 +35,13 @@ class ChatGPTTelegramBot:
     Class representing a ChatGPT Telegram Bot.
     """
 
-    def __init__(self, config: dict, openai: OpenAIHelper):
+    def __init__(self, config: dict, openai: OpenAIHelper, data):
         """
         Initializes the bot with the given configuration and GPT bot object.
         :param config: A dictionary containing the bot configuration
         :param openai: OpenAIHelper object
         """
+        self.data = data
         self.config = config
         self.bot=telegram.Bot(self.config['token'])
         self.openai = openai
@@ -58,7 +61,7 @@ class ChatGPTTelegramBot:
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
-    
+
     async def get_group_information(self, update: Update, context):
         token = self.config['token']
         # get the chat ID   
@@ -76,18 +79,17 @@ class ChatGPTTelegramBot:
         # await update.message.reply_text(f'group name : {group_name}\n group type: {group_type}')
         await update.message.reply_text(f'group <bold>name</bold> : ')
 
-    async def get_group_chat_history(self, update: Update, context: CallbackContext):
-        token = self.config['token']
+    async def get_group_chat_history(self, update: Update, context: CallbackContext,chat_id):
         # # get the chat ID
-        chat_id = update.message.chat_id
-
+        print("chat_id:", chat_id)
+        print('old:', update.message.chat_id)
         # Replace the values below with your own API ID and API hash
         api_id = 25797963
         api_hash = '39e446fa7164ac5b0bf14ee7510287db'
         phone_number = '+972542493033'
         entity = 'session'  # session_name
         client = TelegramClient(entity, api_id, api_hash)
-        client.start()
+        await client.start()
         await client.connect()
         # Log in to your account
         if not await client.is_user_authorized():
@@ -96,16 +98,27 @@ class ChatGPTTelegramBot:
         # chat_date = datetime.datetime.now()
         chat_date = datetime.datetime(year=2023, month=5, day=22)
         # Set up the date range
-        start_date = chat_date.replace(hour=0, minute=0, second=0)
-        end_date = chat_date.replace(hour=23, minute=59, second=59)
-
+        start_date = datetime.datetime.now()- datetime.timedelta(hours=24)
+        end_date = datetime.datetime.now()
+        
         # Set up the offset IDs based on the date range
         start_message = await client.get_messages(chat_id, offset_date=start_date, limit=1)
         offset_id = start_message[0].id if start_message else 0
-        end_message = await client.get_messages(chat_id, offset_date=end_date + timedelta(days=1), limit=1)
+        end_message = await client.get_messages(chat_id, offset_date=end_date, limit=1)
         max_id = end_message[0].id if end_message else 0
 
         messages = await client.get_messages(chat_id, min_id=offset_id, max_id=max_id)
+
+        users =await client.get_participants (chat_id)
+        online_users=0
+        for user in users:
+            try:
+                status = user.status.to_dict()
+                print(f"{user.username}: {status['expires']}")
+                online_users+=1
+            except:
+                pass
+
         await client.disconnect()
         output=""
         for message in reversed(messages):
@@ -113,53 +126,86 @@ class ChatGPTTelegramBot:
             output+=(f'"{message.text}" is sent by {message.sender.username}\n')
 
         # await update.message.reply_text(output)
-        return output
+        return output, online_users
         
-    async def chat_with_GPT(self, update:Update, context:CallbackContext):
-        chat_history = await self.get_group_chat_history(update, context)
-        token = self.config['token']
-        # get the chat ID   
-        chat_id = update.message.chat_id
-        url = f'https://api.telegram.org/bot{token}/getChat?chat_id={chat_id}'
-        response = requests.get(url)
-        data = response.json()
+    async def chat_with_GPT(self, update:Update, context:CallbackContext, chat_id, users):
+        chat_history, online_users = await self.get_group_chat_history(update, context,chat_id)
+       
         member_count =await self.bot.get_chat_member_count(chat_id)
 
-        # print("chat history: ", chat_history)
         content = f"""{{
             content:{chat_history},
             members:{member_count}
         }}"""
-        chat_id = update.message.chat_id
         query=f"""
-            This is the chat history I give you.
+            This is the chat history.
             {content}
 
             Analyze this history and answer to the following questions and make the questioin bold using only b tag in html.
             * What subject most talked about?
             * is the group text bullish or bearish?
-            * what is the engagement in percentage? means, how many people written on group comparing to the total members on the group?
+            * what is engagement percentage of the group? 
+            * what is the online members percentage of the group?
             * what people liked the most?
             * what people disliked the most?
             * provide a suggestions for action according to the provided content
+
+            you can calculate the engagement percentage using this formula: the count of the user mentioned in chat history / total members of this group
+            And the online members percentage using total members divided by online members.
+            The total members are {member_count} and online members are {online_users}.
         """
-        print("query: ", query)
         response, total_token = await self.openai.get_chat_response(chat_id=chat_id,query=query)
-        output_text = f'response: {response}\ntotal_token: {total_token}'  
-        user_object = await self.bot.get_chat_administrators(chat_id)
-        user_id = user_object[0].user.id
-        print("final response: ", response)
+        response = response.replace('<br>',"")
+        # output_text = f'response: {response}\ntotal_token: {total_token}'  
+        # user_object = await self.bot.get_chat_administrators(chat_id)
+        print("query: ",query)
         # Send the response back to the user who sent the message
-        await self.bot.send_message(chat_id=user_id, text=response, parse_mode=telegram.constants.ParseMode.HTML)
+        for user_id in users:
+            await self.bot.send_message(chat_id=int(user_id), text=response, parse_mode=telegram.constants.ParseMode.HTML)
         print("sent already")
         # await update.message.reply_text(output_text)
 
+    async def get_json(self, update:Update, context:CallbackContext, data):
+        await self.bot.send_chat_action(chat_id=update.message.chat_id, action=constants.ChatAction.TYPING)
+         # Get the file object from the message
+        # file_id = update.message.effective_attachment.file_unique_id
+        file = data
+
+        # file = await self.bot.get_file(update.message.effective_attachment.file_unique_id)
+
+        # # Download the file to disk
+        byte_content = await file.download_as_bytearray()
+        decoded_content = byte_content.decode('utf-8')
+        content = json.loads(decoded_content)
+        print(type(content['groups']))
+        # print(content['groups'][0])
+        for group in content['groups'].values():
+            chat_id = group['chat_id']
+            users = group['update_users'].values()
+            await self.chat_with_GPT(update, context, int(chat_id), users)
+        
+        # Respond to the user with the contents of the file
+        await update.message.reply_text(f'Success')
     
 
-    async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
         """
+        # print(dir(self.bot))
+        member_count =await self.bot.get_chat_member_count(-768645718)
+        # print(member_count)
+        # chat = await context.bot.get_chat(-768645718)
+        # print(dir(chat))
+        api_id = 25797963
+        api_hash = '39e446fa7164ac5b0bf14ee7510287db'
+        phone_number = '+972542493033'
+        entity = 'session'  # session_name
+        client = TelegramClient(entity, api_id, api_hash)
+        await client.start()
+        await client.connect()
+        
+         
         commands = self.group_commands if is_group_chat(update) else self.commands
         commands_description = [f'/{command.command} - {command.description}' for command in commands]
         bot_language = self.config['bot_language']
@@ -172,8 +218,13 @@ class ChatGPTTelegramBot:
                 '\n\n' +
                 localized_text('help_text', bot_language)[2]
         )
-        schedule.every().day.at("9:00").do(self.chat_with_GPT, context=update.message.chat_id)
 
+        # schedule.every(10).seconds.do( asyncio.run, self.chat_with_GPT(update, context=update.message.chat_id))
+        # Use an infinite loop to run the schedule check continuously
+        # while True:
+        #     schedule.run_pending()
+        #     await asyncio.sleep(1)
+            # time.sleep(1)
         await update.message.reply_text(help_text, disable_web_page_preview=True)
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -462,6 +513,7 @@ class ChatGPTTelegramBot:
         """
         React to incoming messages and respond accordingly.
         """
+        print("here")
         if update.edited_message or not update.message or update.message.via_bot:
             return
 
@@ -847,24 +899,25 @@ class ChatGPTTelegramBot:
             .post_init(self.post_init) \
             .concurrent_updates(True) \
             .build()
-        
         application.add_handler(CommandHandler('reset', self.reset))
-        application.add_handler(CommandHandler('history', self.get_group_chat_history))
-        application.add_handler(CommandHandler('groupInfo', self.get_group_information))
-        application.add_handler(CommandHandler('chatgpt', self.chat_with_GPT))
+        # application.add_handler(CommandHandler('history', self.get_group_chat_history))
+        # application.add_handler(CommandHandler('groupInfo', self.get_group_information))
+        # application.add_handler(CommandHandler('chatgpt', self.chat_with_GPT))
         application.add_handler(CommandHandler('help', self.help))
         application.add_handler(CommandHandler('image', self.image))
-        application.add_handler(CommandHandler('start', self.help))
         application.add_handler(CommandHandler('stats', self.stats))
         application.add_handler(CommandHandler('resend', self.resend))
-        application.add_handler(CommandHandler(
-            'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
-        )
+        # application.add_handler(CommandHandler(
+        #     'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
+        # )
+        # print(dir(filters.Document))
+        application.add_handler(MessageHandler(filters.Document.MimeType('application/json'), self.get_json))
         application.add_handler(MessageHandler(
             filters.AUDIO | filters.VOICE | filters.Document.AUDIO |
             filters.VIDEO | filters.VIDEO_NOTE | filters.Document.VIDEO,
             self.transcribe))
-        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
+        # application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
+
         application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
             constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
         ]))
@@ -872,9 +925,13 @@ class ChatGPTTelegramBot:
 
         application.add_error_handler(error_handler)
 
+        # print(dir(application.job_queue))
+        # application.job_queue.run_once(self.get_json)
 
+
+        
+        # loop = asyncio.get_event_loop()
+        # loop.run_until_complete(start_bot())
         application.run_polling()
-        # Use an infinite loop to run the schedule check continuously
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
+        
+        

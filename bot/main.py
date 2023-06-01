@@ -1,13 +1,44 @@
 import logging
 import os
+from flask import Flask, jsonify, abort, request
 
 from dotenv import load_dotenv
 
 from openai_helper import OpenAIHelper, default_max_tokens
 from telegram_bot import ChatGPTTelegramBot
 
+app = Flask(__name__)
+data=""
+days = [
+    {"id": 1, "name": "Monday"},
+    {"id": 2, "name": "Tuesday"},
+    {"id": 3, "name": "Wednesday"},
+    {"id": 4, "name": "Thursday"},
+    {"id": 5, "name": "Friday"},
+    {"id": 6, "name": "Saturday"},
+    {"id": 7, "name": "Sunday"},
+]
 
-def main():
+@app.route("/", methods=["GET"])
+def get_days():
+    return jsonify(days)
+
+
+@app.route("/<int:day_id>", methods=["GET"])
+def get_day(day_id):
+    day = [day for day in days if day["id"] == day_id]
+    if len(day) == 0:
+        abort(404)
+    return jsonify({"day": day[0]})
+
+
+@app.route("/", methods=["POST"])
+def post_days():
+    data = request.get_json()
+    print(data)
+    # return jsonify({"success": True}), 201
+
+# def main():
     # Read .env file
     load_dotenv()
 
@@ -79,9 +110,14 @@ def main():
 
     # Setup and run ChatGPT and Telegram bot
     openai_helper = OpenAIHelper(config=openai_config)
-    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=openai_helper)
-    telegram_bot.run()
+    telegram_bot = ChatGPTTelegramBot(config=telegram_config, openai=openai_helper, data=data)
+    # telegram_bot.run()
+    telegram_bot.get_json(data)
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+# if __name__ == '__main__':
+#     main()
